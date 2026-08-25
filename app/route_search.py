@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import bisect
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from app.pdf_extract import PageData
 
@@ -191,13 +191,13 @@ def search_routes(
     seen_keys = set()
     dedup: list[Chain] = []
     for c in out:
-        key = (c.depart, tuple((l.station, l.depart) for l in c.legs), c.arrive)
+        key = (c.depart, tuple((leg.station, leg.depart) for leg in c.legs), c.arrive)
         if key in seen_keys:
             continue
         seen_keys.add(key)
         dedup.append(c)
 
-    dedup.sort(key=lambda c: (_tmin(c.depart), len(c.legs), tuple(l.station for l in c.legs)))
+    dedup.sort(key=lambda c: (_tmin(c.depart), len(c.legs), tuple(leg.station for leg in c.legs)))
     return dedup
 
 
@@ -206,7 +206,7 @@ def chains_to_dict(chains: list[Chain]) -> list[dict]:
         {
             "type": c.type,
             "depart": c.depart,
-            "legs": [{"station": l.station, "arrive": l.arrive, "depart": l.depart, "type": l.type} for l in c.legs],
+            "legs": [{"station": leg.station, "arrive": leg.arrive, "depart": leg.depart, "type": leg.type} for leg in c.legs],
             "arrive": c.arrive,
         }
         for c in chains
