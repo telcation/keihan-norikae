@@ -1,0 +1,28 @@
+# ユーザーレベルのsystemdサービス（sudo不要で再起動できるようにするため）。
+#
+# 配置先: ~/.config/systemd/user/norikae-app.service
+#
+# 使い方（VPS初回セットアップ時。詳細はREADME参照）:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/norikae-app.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now norikae-app
+#   sudo loginctl enable-linger $USER   # ログアウト後もサービスを動かし続けるために1回だけ必要（sudo要）
+#
+# 以降のデプロイ（CIから）は sudo なしで:
+#   systemctl --user restart norikae-app
+
+[Unit]
+Description=Keihan Norikae Annai (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+# %h はこのサービスを動かすユーザーのホームディレクトリに展開される（systemd組み込み変数）
+WorkingDirectory=%h/norikae-app
+ExecStart=%h/norikae-app/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 5011
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

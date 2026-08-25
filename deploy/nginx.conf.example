@@ -1,0 +1,21 @@
+# /etc/nginx/sites-available/norikae-app に配置し、
+# sites-enabled にシンボリックリンクしてから `nginx -t && systemctl reload nginx`
+
+server {
+    listen 80;
+    server_name YOUR_DOMAIN;
+
+    # certbot --nginx で自動的にHTTPS設定を追記させるのが簡単
+    # 例: certbot --nginx -d YOUR_DOMAIN
+
+    location / {
+        proxy_pass http://127.0.0.1:5011;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # PDFアップロードは数MB〜十数MBになりうるため上限を緩める
+    client_max_body_size 25m;
+}
