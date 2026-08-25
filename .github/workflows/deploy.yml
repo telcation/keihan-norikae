@@ -22,15 +22,31 @@ jobs:
     needs: test
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    env:
+      # Secretsはここで一度環境変数に受け、シェル内で空白・改行を除去してから使う。
+      # GitHub Secretsはコピペ時に末尾改行が混入しやすく、${{ }} を直接コマンド文字列に
+      # 埋め込むと「パスの途中で改行される」といった事故につながるため。
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Sanitize secrets (trim whitespace/newlines)
+        run: |
+          {
+            echo "CLEAN_HOST=$(printf '%s' "$VPS_HOST" | tr -d '[:space:]')"
+            echo "CLEAN_USER=$(printf '%s' "$VPS_USER" | tr -d '[:space:]')"
+            echo "CLEAN_APP_DIR=$(printf '%s' "$VPS_APP_DIR" | tr -d '[:space:]')"
+          } >> "$GITHUB_ENV"
 
       - name: Set up SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$CLEAN_HOST" >> ~/.ssh/known_hosts
 
       - name: Rsync project files to VPS
         run: |
@@ -43,7 +59,7 @@ jobs:
             --exclude='.ruff_cache' \
             --exclude='data/datasets.json' \
             -e "ssh -i ~/.ssh/id_ed25519" \
-            ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${{ secrets.VPS_APP_DIR }}/
+            ./ "${CLEAN_USER}@${CLEAN_HOST}:${CLEAN_APP_DIR}/"
 
       - name: Install dependencies and restart service
         uses: appleboy/ssh-action@v1.2.0
@@ -53,7 +69,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             set -e
-            cd ${{ secrets.VPS_APP_DIR }}
+            cd "$(printf '%s' "${{ secrets.VPS_APP_DIR }}" | tr -d '[:space:]')"
             source .venv/bin/activate
             pip install -r requirements.txt
             # sudoは不要（ユーザーレベルのsystemdサービスとして起動しているため）
