@@ -225,7 +225,8 @@
     return h*60+m;
   }
 
-  const API_BASE = ''; // 同一オリジンで配信する前提。別オリジンならここにAPIのベースURLを設定する
+  const API_BASE = ''; // 相対パスで呼ぶため空のまま。/norikae/ のようなサブパス配下でも動くよう、
+                        // 以下のfetchは先頭にスラッシュを付けない相対パス（api/...）にしている。
 
   async function loadState(){
     try{
@@ -244,7 +245,7 @@
   // サーバーから最新の時刻表データを取得する。データ未アップロード(404)ならfalseを返す
   async function fetchDatasets(){
     try{
-      const res = await fetch(API_BASE + '/api/datasets');
+      const res = await fetch(API_BASE + 'api/datasets');
       if(res.status === 404){
         return false;
       }
@@ -471,7 +472,7 @@
     try{
       const form = new FormData();
       form.append('file', file);
-      const res = await fetch(API_BASE + '/api/upload-pdf', { method: 'POST', body: form });
+      const res = await fetch(API_BASE + 'api/upload-pdf', { method: 'POST', body: form });
       const data = await res.json();
       if(!res.ok){
         throw new Error(data.detail || ('HTTP ' + res.status));

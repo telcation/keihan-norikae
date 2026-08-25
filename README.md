@@ -132,6 +132,13 @@ curl http://127.0.0.1:5011/api/health
 nginxでHTTPS終端する場合は `deploy/nginx.conf.example` を参考に設定し、
 `certbot --nginx -d your-domain` などでSSL証明書を取得する。
 
+**サブパス（例: `telcation.com/norikae`）で公開する場合の注意**：
+フロントエンド（`static/index.html`）はAPIを相対パス（`api/datasets` 等）で呼び出す
+実装にしてあるため、ルート直下ではなく `/norikae/` のようなパス配下に置いても動く。
+ただし末尾スラッシュ（`/norikae/`）でアクセスされることが前提なので、
+`deploy/nginx.conf.example` では `/norikae`（スラッシュなし）へのアクセスを
+`/norikae/` へ301リダイレクトするようにしている。
+
 ### 3. 以降のデプロイ
 
 `main` ブランチにpushすると、GitHub Actionsが自動的に

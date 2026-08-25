@@ -1,15 +1,26 @@
-# /etc/nginx/sites-available/norikae-app に配置し、
-# sites-enabled にシンボリックリンクしてから `nginx -t && systemctl reload nginx`
+# telcation.com の /norikae 配下でこのアプリを公開するための設定例。
+#
+# --- パターンA: telcation.com 用の server{} が既にある場合 ---
+# 既存の /etc/nginx/sites-available/telcation.com （など）の server{} ブロックの中に、
+# 下の「ここから」〜「ここまで」を追記して `nginx -t && systemctl reload nginx`。
+#
+# --- パターンB: telcation.com 用の設定がまだ無い場合 ---
+# このファイルをそのまま /etc/nginx/sites-available/norikae-app に配置し、
+# sites-enabled にシンボリックリンクしてから `nginx -t && systemctl reload nginx`。
+# その場合は一番下のコメントアウトした server{} を使う（server_name を書き換えること）。
 
-server {
-    listen 80;
-    server_name YOUR_DOMAIN;
+# ここから（既存server{}に追記する場合はこの中身だけをコピーする） ----------------
 
-    # certbot --nginx で自動的にHTTPS設定を追記させるのが簡単
-    # 例: certbot --nginx -d YOUR_DOMAIN
+    # /norikae （末尾スラッシュなし）でアクセスされた場合は /norikae/ へリダイレクトする。
+    # 相対パスでAPIを呼んでいるフロントエンド側の実装上、末尾スラッシュが必須のため。
+    location = /norikae {
+        return 301 /norikae/;
+    }
 
-    location / {
-        proxy_pass http://127.0.0.1:5011;
+    location /norikae/ {
+        # 末尾スラッシュを両方に付けることで、プロキシ時に /norikae/ プレフィックスを
+        # 取り除いてバックエンドに転送する（バックエンド側はプレフィックスを意識しない）。
+        proxy_pass http://127.0.0.1:5011/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -17,5 +28,33 @@ server {
     }
 
     # PDFアップロードは数MB〜十数MBになりうるため上限を緩める
+    # （server{}直下、または http{} 直下に1つあればよい。既に他の設定で
+    #   client_max_body_size が指定済みなら重複させなくてよい）
     client_max_body_size 25m;
-}
+
+# ここまで ------------------------------------------------------------------
+
+
+# パターンB: server{} ごと新規に作る場合はこちらを使う（上のlocationと重複させないこと）
+#
+# server {
+#     listen 80;
+#     server_name telcation.com;
+#
+#     # certbot --nginx で自動的にHTTPS設定を追記させるのが簡単
+#     # 例: certbot --nginx -d telcation.com
+#
+#     location = /norikae {
+#         return 301 /norikae/;
+#     }
+#
+#     location /norikae/ {
+#         proxy_pass http://127.0.0.1:5011/;
+#         proxy_set_header Host $host;
+#         proxy_set_header X-Real-IP $remote_addr;
+#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+#         proxy_set_header X-Forwarded-Proto $scheme;
+#     }
+#
+#     client_max_body_size 25m;
+# }
