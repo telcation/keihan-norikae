@@ -57,7 +57,7 @@ jobs:
             --exclude='__pycache__' \
             --exclude='.pytest_cache' \
             --exclude='.ruff_cache' \
-            --exclude='data/datasets.json' \
+            --exclude='data/trains.json' \
             -e "ssh -i ~/.ssh/id_ed25519" \
             ./ "${CLEAN_USER}@${CLEAN_HOST}:${CLEAN_APP_DIR}/"
 

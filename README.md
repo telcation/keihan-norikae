@@ -1,18 +1,37 @@
 # 京阪 乗換案内（香里園 → 渡辺橋 / 淀屋橋）
 
-京阪電気鉄道の公式PDF時刻表をアップロードすると、香里園発の全経路（乗換0〜2回まで）を
-自動的に解析・計算して表示するWebアプリです。
+京阪電気鉄道の公式PDF時刻表をアップロードすると、香里園を起点に、指定した期限内に
+目的駅へ到着できる「基準ルート」と、そこに乗り換え可能な全列車を自動的に洗い出して
+表示するWebアプリです。
 
 - バックエンド: FastAPI（PDF解析・経路探索）
 - フロントエンド: 素のHTML/JS（`static/index.html`、ビルド不要）
-- データの持ち方: サーバー側で `data/datasets.json` に生成結果を保存（PDFをアップロードするたびに更新）
+- データの持ち方: サーバー側で `data/trains.json` に全列車の時刻データを保存
+  （PDFをアップロードするたびに更新。渡辺橋・淀屋橋どちらの計算にも同じデータを使う）
+
+## この仕様に至る経緯
+
+もともとは「期限内に到着できる経路を全パターン列挙する」実装だったが、以下の方針に変更した。
+
+- 基準ルート（期限内で最も遅く出発できる経路）を検索し、実際に目的駅まで運んでくれる
+  「到着列車」を1本特定する
+- その到着列車の、香里園以降の停車駅・時刻を全て表示する
+- その到着列車に乗り換え可能な列車（香里園発の全列車が対象）も、香里園以降の
+  停車駅・時刻を全て表示する
+  - 普通→普通の乗換は時間短縮にならないため除外する
+  - 乗換に必要な時間の制限は設けない（同一時刻での乗換も可とする）
+  - 乗換駅（表示駅）は、発着駅（香里園・目的駅）以外は寝屋川市・萱島・守口市・京橋の
+    4駅に限定する
+- 「座れる可能性」の判断はしない（人間が経験則で判断する）。あくまで機械的に
+  接続可能な全列車を洗い出すことが目的
 
 ## できること
 
 1. `/` を開くと、現在サーバーに保存されている時刻表データをもとに、香里園から
-   指定した降車駅（渡辺橋 or 淀屋橋）まで、到着期限内に着けるすべての経路を一覧表示する
+   指定した降車駅（渡辺橋 or 淀屋橋）まで、到着期限内に着ける基準ルートと、
+   それに乗換可能な全列車の時刻表を一覧表示する
 2. 設定画面からPDFをアップロードすると、サーバー側で自動的に再解析され、
-   渡辺橋・淀屋橋の両方のデータが同時に更新される（手作業でのデータ編集機能はない）
+   渡辺橋・淀屋橋どちらの計算にも使えるデータが更新される（手作業でのデータ編集機能はない）
 
 ## ローカルでの動かし方
 
@@ -55,28 +74,24 @@ https://www.keihan.co.jp/traffic/time-fare/time.html
 
 ```
 app/
-  main.py          FastAPIアプリ本体（/api/upload-pdf, /api/datasets, /api/health）
+  main.py          FastAPIアプリ本体（/api/upload-pdf, /api/route, /api/health）
   pdf_extract.py    PDFの座標解析（pdfplumberでヘッダー行の座標を基準に列を復元する）
-  route_search.py   香里園からの多段乗換探索（乗換0〜2回、天満橋は対象外 等のルールを実装）
+  route_search.py   香里園からの経路探索（基準ルート特定＋接続可能列車の全列挙）
   config.py         設定値
 static/
-  index.html        フロントエンド（/api/datasets を fetch してレンダリング）
+  index.html        フロントエンド（/api/route を fetch してレンダリング）
 data/
-  datasets.json     生成結果の永続化先（gitには含めない。VPS上のファイルシステムに直接保存する）
+  trains.json       PDF解析結果（全列車の時刻データ）の永続化先。gitには含めない
 ```
 
-### 経路探索のルール（route_search.py に実装済み）
+### API
 
-- 対象乗換駅：香里園〜京橋間の14駅（天満橋は対象外）
-- 乗換に必要な時間：1分以上。ただし萱島・守口市は同一時刻（0分）での乗換も可
-- 各乗換駅では「その先へ進める最初の列車」を接続先とする
-  （香里園に停まらない種別＝行き止まりの列車に探索を止められないよう除外する）
-- 普通→普通の乗換は時間短縮にならないため除外
-- 「座れる可能性」の判断はしない。あくまで期限内に到着できる経路を機械的に列挙するのみ
-  （どれを選ぶかは利用者の経験則による判断に委ねる）
+- `POST /api/upload-pdf` — PDFをアップロードして解析し、`data/trains.json` を更新する
+- `GET /api/route?target=渡辺橋&deadline=09:30` — 基準ルートと接続可能な全列車を計算して返す
+- `GET /api/health` — ヘルスチェック
 
-新しい降車駅を追加したい場合は `route_search.py` の `DESTINATIONS` / `DEST_LABEL` に
-1行追加するだけでよい（探索アルゴリズム自体は駅非依存）。
+新しい降車駅を追加したい場合は `route_search.py` の `DESTINATIONS` に1行追加するだけでよい
+（探索アルゴリズム自体は駅非依存）。
 
 ## デプロイ（VPS + systemd + GitHub Actions）
 
@@ -92,12 +107,11 @@ CIからは `rsync` でファイルを転送し、SSH経由で依存関係の再
 | `VPS_HOST` | VPSのIPアドレスまたはホスト名 |
 | `VPS_USER` | SSHログインユーザー名 |
 | `VPS_SSH_KEY` | デプロイ用のSSH秘密鍵（後述の手順で作成したもの） |
-| `VPS_APP_DIR` | VPS上でこのリポジトリを配置するディレクトリの絶対パス（例: `/home/USER/norikae-app`。ユーザーのホーム配下を推奨、理由は後述） |
+| `VPS_APP_DIR` | VPS上でこのリポジトリを配置するディレクトリの絶対パス（例: `/home/USER/norikae-app`） |
 
 ### 2. VPS側の準備（初回のみ）
 
 ```bash
-# Python 3.12 と rsync を用意（Ubuntu想定。ディストリのバージョンによりパッケージ名は読み替え）
 sudo apt update
 sudo apt install -y python3.12 python3.12-venv rsync
 
@@ -106,8 +120,6 @@ ssh-keygen -t ed25519 -f deploy_key -N ""
 cat deploy_key.pub >> ~/.ssh/authorized_keys
 # deploy_key の中身（秘密鍵）を GitHub Secrets の VPS_SSH_KEY に登録する
 
-# アプリ用ディレクトリを作成し、リポジトリの内容を一度手動で配置する
-# （以降はCIのrsyncが差分更新してくれるので、初回だけでよい）
 mkdir -p ~/norikae-app
 cd ~/norikae-app
 # ここにこのリポジトリの内容一式をコピー（git clone でも scp でもよい）
@@ -116,54 +128,38 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# systemdユーザーサービスとして登録
 mkdir -p ~/.config/systemd/user
 cp deploy/norikae-app.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now norikae-app
 
-# ログアウト後もサービスを動かし続けるために必要（sudoが要るのはここだけ）
-sudo loginctl enable-linger $USER
+sudo loginctl enable-linger $USER   # ログアウト後もサービスを動かし続けるために必要（sudoが要るのはここだけ）
 
-# 動作確認
 curl http://127.0.0.1:5011/api/health
 ```
 
-nginxでHTTPS終端する場合は `deploy/nginx.conf.example` を参考に設定し、
+nginxで `/norikae` サブパス配下に公開する場合は `deploy/nginx.conf.example` を参考に設定し、
 `certbot --nginx -d your-domain` などでSSL証明書を取得する。
 
-**サブパス（例: `telcation.com/norikae`）で公開する場合の注意**：
-フロントエンド（`static/index.html`）はAPIを相対パス（`api/datasets` 等）で呼び出す
-実装にしてあるため、ルート直下ではなく `/norikae/` のようなパス配下に置いても動く。
-ただし末尾スラッシュ（`/norikae/`）でアクセスされることが前提なので、
-`deploy/nginx.conf.example` では `/norikae`（スラッシュなし）へのアクセスを
-`/norikae/` へ301リダイレクトするようにしている。
+**サブパス公開時の注意**：フロントエンド（`static/index.html`）はAPIを相対パス（`api/route` 等）で
+呼び出す実装にしてあるため、ルート直下ではなく `/norikae/` のようなパス配下に置いても動く。
+ただし末尾スラッシュ（`/norikae/`）でアクセスされることが前提。
 
 ### 3. 以降のデプロイ
 
 `main` ブランチにpushすると、GitHub Actionsが自動的に
 
 1. `pytest` / `ruff` を実行
-2. `rsync` でプロジェクト一式をVPSへ転送（`.venv` や `data/datasets.json` は除外し、既存の仮想環境とアップロード済みデータには触れない）
+2. `rsync` でプロジェクト一式をVPSへ転送（`.venv` や `data/trains.json` は除外）
 3. SSHでVPSに接続し、`pip install -r requirements.txt` で依存関係を更新してから
    `systemctl --user restart norikae-app` でサービスを再起動
 
-を行う（`.github/workflows/deploy.yml`）。**sudoは初回のlingering設定以外では一切使わない**
-（ユーザーレベルのsystemdサービスとして動かしているため）。
-
-### データの永続化について
-
-`data/datasets.json` はrsyncの除外リストに入れているため、デプロイのたびに転送されて
-上書きされることはない。VPS上のファイルシステムに直接置かれ続けるので、
-コンテナのような揮発性の心配はそもそもない。
+を行う（`.github/workflows/deploy.yml`）。sudoは初回のlingering設定以外では一切使わない。
 
 ### トラブルシューティング
 
 ```bash
-# サービスの状態・ログを見る
 systemctl --user status norikae-app
 journalctl --user -u norikae-app -f
-
-# 手動で再起動
 systemctl --user restart norikae-app
 ```

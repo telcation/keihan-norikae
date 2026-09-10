@@ -3,27 +3,23 @@ route_search.py のユニットテスト。
 
 実PDFを使わず、駅の発車時刻だけを持つ最小限の PageData を組み立てて検証する。
 これまでの会話で見つかった不具合（0分接続駅での自己ヒット、行き止まり列車への
-振り分け、普通→普通乗換の除外漏れ）を、そのまま回帰テストとして固定している。
+振り分け、普通→普通乗換の除外漏れ）や、乗換駅を寝屋川市・萱島・守口市・京橋の
+4駅に限定する仕様を、そのまま回帰テストとして固定している。
 """
 from __future__ import annotations
 
 from app.pdf_extract import PageData
-from app.route_search import search_routes
+from app.route_search import build_trains, find_baseline, find_feeders
 
 
-def _page(rows_spec: list[tuple[str, str, list[str | None]]], types: list[str], dests: list[str]) -> PageData:
+def _page(rows_spec, types, dests):
     n = len(types)
-    meta = {
-        "type": types,
-        "nickname": [None] * n,
-        "dest": dests,
-        "formation": [None] * n,
-    }
+    meta = {"type": types, "nickname": [None] * n, "dest": dests, "formation": [None] * n}
     return PageData(n_cols=n, meta=meta, rows=rows_spec)
 
 
 def test_simple_direct_route_to_watanabe():
-    """香里園発の列車がそのまま中之島直通なら、乗換なしで到達できる"""
+    """香里園発の列車がそのまま中之島直通(渡辺橋停車)なら、乗換なしで到達できる"""
     page = _page(
         rows_spec=[
             ("香里園", "発", ["09:00"]),
@@ -33,11 +29,13 @@ def test_simple_direct_route_to_watanabe():
         types=["準急"],
         dests=["中之島"],
     )
-    chains = search_routes([page], target="渡辺橋", window_start="06:00", window_end="10:00")
-    assert len(chains) == 1
-    assert chains[0].depart == "09:00"
-    assert chains[0].arrive == "09:23"
-    assert chains[0].legs == []
+    trains = build_trains([page])
+    baseline = find_baseline(trains, target="渡辺橋", deadline="09:30", window_start="06:00", window_end="10:00")
+    assert baseline is not None
+    depart, t_final, arrive = baseline
+    assert depart == "09:00"
+    assert arrive == "09:23"
+    assert t_final.type == "準急"
 
 
 def test_zero_buffer_station_does_not_self_match():
@@ -52,12 +50,14 @@ def test_zero_buffer_station_does_not_self_match():
         types=["普通", "快速急行"],
         dests=["淀屋橋", "中之島"],
     )
-    chains = search_routes([page], target="渡辺橋", window_start="06:00", window_end="10:00")
-    # 09:00発(1本目, 淀屋橋止まり)は守口市で「快速急行(2本目)」に乗り換えて到達できるはず
-    matches = [c for c in chains if c.depart == "09:00"]
-    assert matches, "守口市での同時刻乗換が探索できていない（自己ヒットで打ち切られている可能性）"
-    assert matches[0].arrive == "09:23"
-    assert matches[0].legs[0].station == "守口市"
+    trains = build_trains([page])
+    baseline = find_baseline(trains, target="渡辺橋", deadline="09:30", window_start="06:00", window_end="10:00")
+    assert baseline is not None
+    depart, t_final, arrive = baseline
+    # 09:00発(普通)は守口市で0分接続により09:05発(快速急行)へ乗換可能で同じ09:23着になるが、
+    # 同着の場合はより遅く出発できる方(09:05発)が基準ルートとして選ばれる。
+    assert depart == "09:05"
+    assert arrive == "09:23"
 
 
 def test_dead_end_train_is_skipped():
@@ -69,13 +69,14 @@ def test_dead_end_train_is_skipped():
             ("渡辺橋", "発", [None, None, "09:31"]),
         ],
         types=["快速急行", "特急", "普通"],
-        # 2本目(特急)は淀屋橋止まりでこの先どの駅にも停まらない(=行き止まり)
-        dests=["淀屋橋", "淀屋橋", "中之島"],
+        dests=["淀屋橋", "淀屋橋", "中之島"],  # 2本目(特急)はこの先どの駅にも停まらない行き止まり
     )
-    chains = search_routes([page], target="渡辺橋", window_start="06:00", window_end="10:00")
-    assert len(chains) == 1
-    assert chains[0].arrive == "09:31"
-    assert chains[0].legs[0].type == "普通"  # 特急ではなく、その次の普通に接続できている
+    trains = build_trains([page])
+    baseline = find_baseline(trains, target="渡辺橋", deadline="09:40", window_start="06:00", window_end="10:00")
+    assert baseline is not None
+    _, t_final, arrive = baseline
+    assert arrive == "09:31"
+    assert t_final.type == "普通"  # 特急ではなく、その次の普通に接続できている
 
 
 def test_local_to_local_transfer_is_excluded():
@@ -89,8 +90,9 @@ def test_local_to_local_transfer_is_excluded():
         types=["普通", "普通"],
         dests=["淀屋橋", "中之島"],
     )
-    chains = search_routes([page], target="渡辺橋", window_start="06:00", window_end="10:00")
-    assert chains == []  # 普通→普通しかルートがないので、到達できる経路はゼロ件になる
+    trains = build_trains([page])
+    baseline = find_baseline(trains, target="渡辺橋", deadline="09:30", window_start="06:00", window_end="10:00")
+    assert baseline is None  # 普通→普通しかルートがないので、到達できる経路はゼロ件になる
 
 
 def test_yodoyabashi_uses_arrival_row_not_departure():
@@ -103,7 +105,51 @@ def test_yodoyabashi_uses_arrival_row_not_departure():
         types=["準急"],
         dests=["淀屋橋"],
     )
-    chains = search_routes([page], target="淀屋橋", window_start="06:00", window_end="10:00")
-    assert len(chains) == 1
-    assert chains[0].arrive == "09:35"
-    assert chains[0].legs == []
+    trains = build_trains([page])
+    baseline = find_baseline(trains, target="淀屋橋", deadline="09:40", window_start="06:00", window_end="10:00")
+    assert baseline is not None
+    depart, t_final, arrive = baseline
+    assert arrive == "09:35"
+    assert t_final.stops == {"香里園": 540, "淀屋橋": 575}
+
+
+def test_display_stations_limited_to_four_transfer_points():
+    """乗換駅（表示駅）は寝屋川市・萱島・守口市・京橋に限定され、他の駅は保持しないこと"""
+    page = _page(
+        rows_spec=[
+            ("香里園", "発", ["09:00"]),
+            ("寝屋川市", "発", ["09:03"]),
+            ("萱島", "発", ["09:06"]),
+            ("大和田", "発", ["09:08"]),   # 対象外の駅
+            ("守口市", "発", ["09:12"]),
+            ("天満橋", "発", ["09:20"]),   # 対象外の駅
+            ("渡辺橋", "発", ["09:23"]),
+        ],
+        types=["普通"],
+        dests=["中之島"],
+    )
+    trains = build_trains([page])
+    assert trains[0].stops == {
+        "香里園": 540, "寝屋川市": 543, "萱島": 546, "守口市": 552, "渡辺橋": 563,
+    }
+
+
+def test_find_feeders_no_minimum_buffer_and_excludes_local_to_local():
+    """接続可能な列車の探索は、乗換時間の制限なし(同一時刻OK)・普通→普通は除外"""
+    page = _page(
+        rows_spec=[
+            ("香里園", "発", ["08:50", "08:55", "09:00"]),
+            ("京橋", "発", ["09:10", "09:10", "09:15"]),
+            ("渡辺橋", "発", [None, None, "09:23"]),
+        ],
+        types=["普通", "準急", "普通"],
+        dests=["淀屋橋", "淀屋橋", "中之島"],
+    )
+    trains = build_trains([page])
+    t_final = trains[2]  # 09:00発、渡辺橋09:23着の列車
+    feeders = find_feeders(trains, t_final)
+    types = {f["type"] for f in feeders}
+    assert "普通" not in types  # 普通(t_finalと同種別)→普通の乗換は除外される
+    assert "準急" in types      # 京橋09:10着(同一時刻ではないが余裕あり)は候補に入る
+    feeder = next(f for f in feeders if f["type"] == "準急")
+    assert feeder["transfer_points"] == [{"station": "京橋", "feeder_time": "09:10", "final_time": "09:15"}]

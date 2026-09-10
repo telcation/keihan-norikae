@@ -13,27 +13,33 @@ from pathlib import Path
 # `python -m app.main` / `uvicorn app.main:app` のどの起動方法でも動くようにする。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
 from app.config import UPLOAD_MAX_BYTES
 from app.pdf_extract import extract_pdf, extract_revision_date
-from app.route_search import DESTINATIONS, chains_to_dict, search_routes
+from app.route_search import (
+    DESTINATIONS,
+    Train,
+    find_baseline,
+    find_feeders,
+    build_trains,
+    train_to_dict,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("norikae")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
-DATA_FILE = DATA_DIR / "datasets.json"
+TRAINS_FILE = DATA_DIR / "trains.json"
 STATIC_DIR = BASE_DIR / "static"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="京阪 乗換案内API", version="1.0.0")
+app = FastAPI(title="京阪 乗換案内API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,43 +49,21 @@ app.add_middleware(
 )
 
 
-class UploadResponse(BaseModel):
-    ok: bool
-    revision_date: str | None
-    counts: dict[str, int]
-    generated_at: str
-
-
-def _generate_datasets(pdf_bytes: bytes) -> dict:
-    pages = extract_pdf(pdf_bytes)
-    if not pages:
-        raise ValueError("PDFからページを読み取れませんでした（フォーマットが想定と異なる可能性があります）")
-
-    revision_date = extract_revision_date(pdf_bytes)
-    datasets = {}
-    counts = {}
-    for dest in DESTINATIONS:
-        chains = search_routes(pages, dest)
-        datasets[dest] = chains_to_dict(chains)
-        counts[dest] = len(chains)
-
+def _save_trains(revision_date: str | None, trains: list[Train]) -> None:
     payload = {
         "revision_date": revision_date,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "datasets": datasets,
-        "counts": counts,
+        "trains": [{"type": tr.type, "dest": tr.dest, "stops": tr.stops} for tr in trains],
     }
-    return payload
+    TRAINS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _load_current() -> dict | None:
-    if DATA_FILE.exists():
-        return json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    return None
-
-
-def _save_current(payload: dict) -> None:
-    DATA_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+def _load_trains() -> tuple[str | None, list[Train]] | None:
+    if not TRAINS_FILE.exists():
+        return None
+    payload = json.loads(TRAINS_FILE.read_text(encoding="utf-8"))
+    trains = [Train(type=t["type"], dest=t["dest"], stops=t["stops"]) for t in payload["trains"]]
+    return payload.get("revision_date"), trains
 
 
 @app.get("/api/health")
@@ -87,15 +71,7 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/api/datasets")
-def get_datasets():
-    current = _load_current()
-    if current is None:
-        raise HTTPException(status_code=404, detail="時刻表データがまだアップロードされていません")
-    return current
-
-
-@app.post("/api/upload-pdf", response_model=UploadResponse)
+@app.post("/api/upload-pdf")
 async def upload_pdf(file: UploadFile = File(...)):
     if file.content_type not in ("application/pdf", "application/octet-stream"):
         raise HTTPException(status_code=400, detail="PDFファイルをアップロードしてください")
@@ -110,20 +86,55 @@ async def upload_pdf(file: UploadFile = File(...)):
         )
 
     try:
-        payload = _generate_datasets(pdf_bytes)
+        pages = extract_pdf(pdf_bytes)
+        if not pages:
+            raise ValueError("PDFからページを読み取れませんでした（フォーマットが想定と異なる可能性があります）")
+        revision_date = extract_revision_date(pdf_bytes)
+        trains = build_trains(pages)
     except Exception as e:  # noqa: BLE001
         logger.exception("PDF解析に失敗しました")
         raise HTTPException(status_code=422, detail=f"PDFの解析に失敗しました: {e}") from e
 
-    _save_current(payload)
-    logger.info("データセットを更新しました: %s", payload["counts"])
+    _save_trains(revision_date, trains)
+    logger.info("データを更新しました: %d本の列車", len(trains))
 
-    return UploadResponse(
-        ok=True,
-        revision_date=payload["revision_date"],
-        counts=payload["counts"],
-        generated_at=payload["generated_at"],
-    )
+    return {"ok": True, "revision_date": revision_date, "train_count": len(trains)}
+
+
+@app.get("/api/route")
+def get_route(
+    target: str = Query(..., description="降車駅（渡辺橋 または 淀屋橋）"),
+    deadline: str = Query(..., description="到着期限 HH:MM"),
+):
+    if target not in DESTINATIONS:
+        raise HTTPException(status_code=400, detail=f"未対応の降車駅です（対応: {list(DESTINATIONS)}）")
+
+    loaded = _load_trains()
+    if loaded is None:
+        raise HTTPException(status_code=404, detail="時刻表データがまだアップロードされていません")
+    revision_date, trains = loaded
+
+    baseline = find_baseline(trains, target=target, deadline=deadline)
+    if baseline is None:
+        return {
+            "revision_date": revision_date,
+            "target_options": list(DESTINATIONS.keys()),
+            "error": f"{deadline} までに {target} へ到着できる列車が見つかりません",
+        }
+
+    depart, t_final, arrive = baseline
+    feeders = find_feeders(trains, t_final)
+
+    return {
+        "revision_date": revision_date,
+        "target_options": list(DESTINATIONS.keys()),
+        "baseline": {
+            "depart": depart,
+            "arrive": arrive,
+            "final_train": train_to_dict(t_final),
+        },
+        "feeders": feeders,
+    }
 
 
 # 静的ファイル（フロントエンド）の配信
