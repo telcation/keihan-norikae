@@ -77,15 +77,12 @@
 .na-time-big { font-size: 22px; font-weight: 700; }
 .na-type-tag { font-size: 11px; background: var(--navy); color: var(--white); padding: 3px 8px; border-radius: 6px; font-weight: 500; }
 
-.na-tt-scroll { overflow-x: auto; margin-top: 10px; }
-.na-tt { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
-.na-tt th, .na-tt td { padding: 5px 8px; text-align: center; border-bottom: 1px solid var(--line); }
-.na-tt th { color: var(--muted); font-weight: 500; font-size: 11px; }
-.na-tt td.na-mono { font-family: 'JetBrains Mono', monospace; }
-.na-tt td.na-transfer-hit { background: #E8FBF6; color: #06322D; font-weight: 700; border-radius: 4px; }
+.na-tt-vertical { margin-top: 10px; border-collapse: collapse; font-size: 13px; }
+.na-tt-vertical th, .na-tt-vertical td { padding: 5px 10px; text-align: left; border-bottom: 1px solid var(--line); }
+.na-tt-vertical th { color: var(--muted); font-weight: 500; width: 90px; }
+.na-tt-vertical td { font-family: 'JetBrains Mono', monospace; }
+.na-tt-vertical td.na-transfer-hit { background: #E8FBF6; color: #06322D; font-weight: 700; border-radius: 4px; }
 
-.na-feeder-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 2px; }
-.na-feeder-depart { font-size: 18px; font-weight: 700; }
 .na-transfer-summary { font-size: 11.5px; color: var(--teal); background: #E8FBF6; padding: 2px 8px; border-radius: 999px; }
 
 .na-drawer { display: none; margin-top: 16px; }
@@ -204,10 +201,11 @@
   function timetableTable(stops, highlightStations){
     const list = orderedStops(stops);
     const hl = highlightStations || new Set();
-    return `<div class="na-tt-scroll"><table class="na-tt">
-      <thead><tr>${list.map(s => `<th>${s.station}</th>`).join('')}</tr></thead>
-      <tbody><tr>${list.map(s => `<td class="na-mono${hl.has(s.station)?' na-transfer-hit':''}">${s.time}</td>`).join('')}</tr></tbody>
-    </table></div>`;
+    const rows = list.map(s => `<tr>
+        <th>${s.station}</th>
+        <td class="na-mono${hl.has(s.station)?' na-transfer-hit':''}">${s.time}</td>
+      </tr>`).join('');
+    return `<table class="na-tt-vertical">${rows}</table>`;
   }
 
   async function fetchRoute(){
@@ -273,14 +271,16 @@
 
     const {baseline, feeders} = data;
     const finalTrain = baseline.final_train;
+    const boardType = baseline.board_type;
+    const finalType = finalTrain.type;
+    const typesDiffer = boardType !== finalType;
 
     let html = '';
     html += `<div class="na-section-title"><span class="no">1</span>基準ルートの到着列車（${settings.alight}に${settings.deadline}までに到着）</div>`;
     html += `<div class="na-card na-baseline">
       <div class="na-row">
-        <div><span class="na-time-big na-mono">${baseline.depart}</span> 発</div>
-        <div><span class="na-type-tag">${finalTrain.type}</span></div>
-        <div><span class="na-time-big na-mono">${baseline.arrive}</span> 着</div>
+        <div>${settings.board} <span class="na-time-big na-mono">${baseline.depart}</span> 発 <span class="na-type-tag">${boardType}</span></div>
+        <div>${typesDiffer ? `<span class="na-type-tag">${finalType}</span> ` : ''}${settings.alight} <span class="na-time-big na-mono">${baseline.arrive}</span> 着</div>
       </div>
       ${timetableTable(finalTrain.stops, null)}
     </div>`;
@@ -293,10 +293,11 @@
       feeders.forEach(f => {
         const hl = new Set(f.transfer_points.map(p => p.station));
         const summary = f.transfer_points.map(p => `${p.station}(${p.feeder_time}→${p.final_time})`).join(' / ');
+        const feederDiffers = f.type !== finalType;
         html += `<div class="na-card">
-          <div class="na-feeder-head">
-            <span class="na-feeder-depart na-mono">${f.stops['香里園']}発</span>
-            <span class="na-type-tag">${f.type}</span>
+          <div class="na-row">
+            <div>${settings.board} <span class="na-time-big na-mono">${f.stops[settings.board]}</span> 発 <span class="na-type-tag">${f.type}</span></div>
+            <div>${feederDiffers ? `<span class="na-type-tag">${finalType}</span> ` : ''}${settings.alight} <span class="na-time-big na-mono">${baseline.arrive}</span> 着</div>
           </div>
           <div class="na-transfer-summary">乗換可能: ${summary}</div>
           ${timetableTable(f.stops, hl)}

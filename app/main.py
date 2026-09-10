@@ -122,8 +122,8 @@ def get_route(
             "error": f"{deadline} までに {target} へ到着できる列車が見つかりません",
         }
 
-    depart, t_final, arrive = baseline
-    feeders = find_feeders(trains, t_final)
+    depart, root_train, t_final, arrive = baseline
+    feeders = find_feeders(trains, t_final, target)
 
     return {
         "revision_date": revision_date,
@@ -131,7 +131,8 @@ def get_route(
         "baseline": {
             "depart": depart,
             "arrive": arrive,
-            "final_train": train_to_dict(t_final),
+            "board_type": root_train.type,
+            "final_train": train_to_dict(t_final, target),
         },
         "feeders": feeders,
     }
