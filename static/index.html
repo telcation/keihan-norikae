@@ -177,9 +177,12 @@
 (function(){
   const DEFAULT_SETTINGS = { board: "香里園", alight: "渡辺橋", deadline: "09:30" };
   const FULL_STATIONS = ["香里園", "寝屋川市", "萱島", "守口市", "京橋", "渡辺橋", "淀屋橋"];
+  // 降車駅の選択肢は固定（バックエンドのDESTINATIONSと一致させる）。
+  // API応答に依存すると、初回読み込み時にデータ未アップロード/エラーだった場合に
+  // プルダウンが永久に空のままになってしまうため、ページ読み込み時に確定させる。
+  const ALIGHT_OPTIONS = ["渡辺橋", "淀屋橋"];
 
   let settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
-  let alightOptions = [];
   let timetableDate = null;
 
   const $ = (id) => document.getElementById(id);
@@ -262,11 +265,6 @@
 
     timetableDate = data.revision_date;
     renderTimetableFreshness();
-    if(alightOptions.length === 0 && data.target_options){
-      alightOptions = data.target_options;
-      $('inAlight').innerHTML = alightOptions.map(a => `<option value="${a}">${a}</option>`).join('');
-      $('inAlight').value = settings.alight;
-    }
 
     if(data.error){
       detail.innerHTML = `<div class="na-empty">${data.error}</div>`;
@@ -331,7 +329,6 @@
 
   $('resetBtn').addEventListener('click', async () => {
     settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
-    if(alightOptions.length && !alightOptions.includes(settings.alight)) settings.alight = alightOptions[0];
     $('inAlight').value = settings.alight;
     $('inDeadline').value = settings.deadline;
     savePrefs();
@@ -357,7 +354,6 @@
         throw new Error(data.detail || ('HTTP ' + res.status));
       }
       status.textContent = `更新しました（改正日: ${data.revision_date || '不明'} / 列車数: ${data.train_count}）`;
-      alightOptions = [];
       await render();
     }catch(e){
       status.textContent = 'アップロードに失敗しました: ' + e.message;
@@ -368,6 +364,9 @@
 
   (async function init(){
     loadPrefs();
+    if(!ALIGHT_OPTIONS.includes(settings.alight)) settings.alight = DEFAULT_SETTINGS.alight;
+    $('inAlight').innerHTML = ALIGHT_OPTIONS.map(a => `<option value="${a}">${a}</option>`).join('');
+    $('inAlight').value = settings.alight;
     $('inDeadline').value = settings.deadline;
     await render();
   })();
