@@ -8,11 +8,13 @@
 
 - 基準ルート（期限内で最も遅く出発できる経路）を検索し、実際に目的駅まで運んでくれる
   「到着列車」を1本特定する
-- その到着列車の、香里園以降の停車駅・時刻を全て表示する
+- その到着列車について、実際に乗客が乗っている区間（乗換駅以降。乗換が無ければ
+  香里園から）の停車駅・時刻のみを表示する（乗換前・乗車前の区間は表示しない）
 - その到着列車に乗り換え可能な列車（香里園発の全列車が対象）も、香里園以降の
   停車駅・時刻を全て表示する
-  - ただし普通→普通の乗換は時間短縮にならないため除外する
-  - 乗換に必要な時間の制限は設けない（同一時刻での乗換も可とする）
+  - 普通→普通の乗換は時間短縮にならないため除外する
+  - 乗換に必要な待ち時間は0〜MAX_TRANSFER_WAIT_MIN分の範囲に限定する
+    （0分＝同一時刻の乗換も可とするが、待ちすぎる乗換は現実的でないため上限を設ける）
 - 「座れる可能性」の判断はしない（人間が経験則で判断する）。あくまで機械的に
   接続可能な全列車を洗い出すことが目的
 """
@@ -42,6 +44,7 @@ SUBTYPE_OF = {"淀屋橋": "着"}
 DESTINATIONS: dict[str, str] = {"渡辺橋": "中之島", "淀屋橋": "淀屋橋"}
 
 MAX_TRANSFERS = 2
+MAX_TRANSFER_WAIT_MIN = 15  # 乗換の待ち時間の上限（分）。0分（同一時刻）は許容する。
 
 
 def _tmin(t: str | None) -> int | None:
@@ -103,18 +106,19 @@ def find_baseline(
     deadline: str,
     window_start: str = "06:00",
     window_end: str = "10:00",
-) -> tuple[str, Train, Train, str] | None:
+) -> tuple[str, Train, Train, str, str] | None:
     """
     期限内で最も遅く香里園を出発できる経路を探索し、実際に目的駅まで運んでくれる
     「到着列車」を特定する。
 
     - 乗換は最大 MAX_TRANSFERS 回まで（各乗換駅では、行き止まりの列車を除いた
       最初の1本を接続先とする）
-    - 乗換時間は0分以上（同一時刻の乗換も可）
+    - 乗換の待ち時間は0〜MAX_TRANSFER_WAIT_MIN分（同一時刻の乗換も可、待ちすぎは除外）
     - 普通→普通の乗換は除外する
 
-    戻り値: (香里園発時刻, 乗車列車(Train), 到着列車(Train), 目的駅着時刻) の組。
-    乗換が無い経路の場合、乗車列車と到着列車は同一のTrainになる。見つからなければ None。
+    戻り値: (香里園発時刻, 乗車列車(Train), 到着列車(Train), 目的駅着時刻, 到着列車への乗車駅)
+    の組。乗換が無い経路の場合、乗車列車と到着列車は同一のTrainになり、乗車駅は香里園になる。
+    見つからなければ None。
     """
     if target not in DESTINATIONS:
         raise ValueError(f"未対応の目的駅です: {target}（対応: {list(DESTINATIONS)}）")
@@ -135,17 +139,27 @@ def find_baseline(
         idx = bisect.bisect_left(times, after_time)  # 同一時刻の乗換も可
         while idx < len(lst):
             t, tr = lst[idx]
+            if t - after_time > MAX_TRANSFER_WAIT_MIN:
+                return None  # 以降はさらに待ち時間が伸びるだけなので打ち切る
             if tr is not exclude and _is_viable(tr, station, dest_label, target):
                 if not (from_type == "普通" and tr.type == "普通"):
                     return t, tr
             idx += 1
         return None
 
-    results: list[tuple[int, Train, Train, int]] = []
+    # (root_depart, root_train, t_final, arrive, board_station_of_t_final)
+    results: list[tuple[int, Train, Train, int, str]] = []
 
-    def dfs(train: Train, board_station: str, transfers_used: int, seen: set[str], root_depart: int, root_train: Train):
+    def dfs(
+        train: Train,
+        board_station: str,
+        transfers_used: int,
+        seen: set[str],
+        root_depart: int,
+        root_train: Train,
+    ):
         if train.dest == dest_label and target in train.stops:
-            results.append((root_depart, root_train, train, train.stops[target]))
+            results.append((root_depart, root_train, train, train.stops[target], board_station))
         if transfers_used >= MAX_TRANSFERS:
             return
         for st in TRANSFER_STATIONS:
@@ -166,31 +180,40 @@ def find_baseline(
             continue
         dfs(tr, ORIGIN_STATION, 0, {ORIGIN_STATION}, kdep, tr)
 
-    valid = [(d, root, tr, a) for (d, root, tr, a) in results if a <= dl]
+    valid = [(d, root, tr, a, bs) for (d, root, tr, a, bs) in results if a <= dl]
     if not valid:
         return None
     # 到着が最も遅い(=期限にもっとも近い)ものを採用。同着なら出発が遅い方を優先。
     valid.sort(key=lambda x: (x[3], x[0]))
-    depart, root_train, t_final, arrive = valid[-1]
-    return _fmt(depart), root_train, t_final, _fmt(arrive)
+    depart, root_train, t_final, arrive, board_station = valid[-1]
+    return _fmt(depart), root_train, t_final, _fmt(arrive), board_station
 
 
 OTHER_DESTINATION = {"渡辺橋": "淀屋橋", "淀屋橋": "渡辺橋"}
 
 
-def _filtered_stops(stops: dict[str, int], target: str) -> dict[str, str]:
-    """表示用に停車駅の時刻を整形する。今回の目的駅と異なる方の終着駅
-    （例: 目的駅が渡辺橋のときの淀屋橋）は、その列車がたまたま停車していても
-    路線が異なり無関係なため取り除く。"""
+def _filtered_stops(stops: dict[str, int], target: str, from_station: str | None = None) -> dict[str, str]:
+    """表示用に停車駅の時刻を整形する。
+
+    - 今回の目的駅と異なる方の終着駅（例: 目的駅が渡辺橋のときの淀屋橋）は、
+      その列車がたまたま停車していても路線が異なり無関係なため取り除く。
+    - from_station を指定した場合、その駅より手前（乗客がまだ乗っていない区間）
+      の停車駅も取り除く（到着列車の、乗換前の区間を表示しないようにするため）。
+    """
     other = OTHER_DESTINATION.get(target)
-    return {st: _fmt(t) for st, t in stops.items() if st != other}
+    min_order = STATION_ORDER.get(from_station, -1) if from_station else -1
+    return {
+        st: _fmt(t)
+        for st, t in stops.items()
+        if st != other and STATION_ORDER.get(st, -1) >= min_order
+    }
 
 
 def find_feeders(trains: list[Train], t_final: Train, target: str) -> list[dict]:
     """
     到着列車(t_final)に乗換可能な、香里園発の全列車を探す。
 
-    - 乗換時間の制限なし（同一時刻の乗換も可）
+    - 乗換の待ち時間は0〜MAX_TRANSFER_WAIT_MIN分（同一時刻の乗換も可、待ちすぎは除外）
     - 普通→普通の乗換は除外する
     - t_final 自身は候補から除く
 
@@ -208,7 +231,8 @@ def find_feeders(trains: list[Train], t_final: Train, target: str) -> list[dict]
             if st in tr.stops and st in t_final.stops:
                 if tr.type == "普通" and t_final.type == "普通":
                     continue
-                if tr.stops[st] <= t_final.stops[st]:
+                wait = t_final.stops[st] - tr.stops[st]
+                if 0 <= wait <= MAX_TRANSFER_WAIT_MIN:
                     points.append({"station": st, "feeder_time": _fmt(tr.stops[st]), "final_time": _fmt(t_final.stops[st])})
         if points:
             feeders.append({
@@ -223,5 +247,5 @@ def find_feeders(trains: list[Train], t_final: Train, target: str) -> list[dict]
     return feeders
 
 
-def train_to_dict(train: Train, target: str) -> dict:
-    return {"type": train.type, "dest": train.dest, "stops": _filtered_stops(train.stops, target)}
+def train_to_dict(train: Train, target: str, from_station: str | None = None) -> dict:
+    return {"type": train.type, "dest": train.dest, "stops": _filtered_stops(train.stops, target, from_station)}

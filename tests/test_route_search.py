@@ -9,7 +9,7 @@ route_search.py のユニットテスト。
 from __future__ import annotations
 
 from app.pdf_extract import PageData
-from app.route_search import build_trains, find_baseline, find_feeders
+from app.route_search import build_trains, find_baseline, find_feeders, train_to_dict
 
 
 def _page(rows_spec, types, dests):
@@ -32,7 +32,7 @@ def test_simple_direct_route_to_watanabe():
     trains = build_trains([page])
     baseline = find_baseline(trains, target="渡辺橋", deadline="09:30", window_start="06:00", window_end="10:00")
     assert baseline is not None
-    depart, root_train, t_final, arrive = baseline
+    depart, root_train, t_final, arrive, board_station = baseline
     assert depart == "09:00"
     assert arrive == "09:23"
     assert t_final.type == "準急"
@@ -53,7 +53,7 @@ def test_zero_buffer_station_does_not_self_match():
     trains = build_trains([page])
     baseline = find_baseline(trains, target="渡辺橋", deadline="09:30", window_start="06:00", window_end="10:00")
     assert baseline is not None
-    depart, root_train, t_final, arrive = baseline
+    depart, root_train, t_final, arrive, board_station = baseline
     # 09:00発(普通)は守口市で0分接続により09:05発(快速急行)へ乗換可能で同じ09:23着になるが、
     # 同着の場合はより遅く出発できる方(09:05発)が基準ルートとして選ばれる。
     assert depart == "09:05"
@@ -74,7 +74,7 @@ def test_dead_end_train_is_skipped():
     trains = build_trains([page])
     baseline = find_baseline(trains, target="渡辺橋", deadline="09:40", window_start="06:00", window_end="10:00")
     assert baseline is not None
-    _, _root, t_final, arrive = baseline
+    _, _root, t_final, arrive, _board = baseline
     assert arrive == "09:31"
     assert t_final.type == "普通"  # 特急ではなく、その次の普通に接続できている
 
@@ -108,7 +108,7 @@ def test_yodoyabashi_uses_arrival_row_not_departure():
     trains = build_trains([page])
     baseline = find_baseline(trains, target="淀屋橋", deadline="09:40", window_start="06:00", window_end="10:00")
     assert baseline is not None
-    depart, root_train, t_final, arrive = baseline
+    depart, root_train, t_final, arrive, board_station = baseline
     assert arrive == "09:35"
     assert t_final.stops == {"香里園": 540, "淀屋橋": 575}
 
@@ -169,7 +169,7 @@ def test_board_train_type_is_kept_when_transfer_happens():
     trains = build_trains([page])
     baseline = find_baseline(trains, target="渡辺橋", deadline="09:30", window_start="06:00", window_end="10:00")
     assert baseline is not None
-    depart, root_train, t_final, arrive = baseline
+    depart, root_train, t_final, arrive, board_station = baseline
     assert depart == "08:57"
     assert root_train.type == "準急"  # 乗車時は準急
     assert t_final.type == "普通"     # 実際に渡辺橋まで運ぶのは京橋乗換後の普通
@@ -193,3 +193,77 @@ def test_feeder_stops_exclude_other_destination():
     assert len(feeders) == 1
     assert "淀屋橋" not in feeders[0]["stops"]
     assert feeders[0]["stops"] == {"香里園": "08:50", "京橋": "09:05"}
+
+
+def test_transfer_wait_over_15_minutes_is_rejected_in_baseline():
+    """基準ルート探索で、乗換の待ち時間が15分を超える接続は採用されないこと"""
+    page = _page(
+        rows_spec=[
+            ("香里園", "発", ["09:00", None]),
+            ("京橋", "発", ["09:10", "09:26"]),  # 待ち時間16分(不可)
+            ("渡辺橋", "発", [None, "09:35"]),
+        ],
+        types=["準急", "普通"],
+        dests=["淀屋橋", "中之島"],
+    )
+    trains = build_trains([page])
+    baseline = find_baseline(trains, target="渡辺橋", deadline="09:40", window_start="06:00", window_end="10:00")
+    assert baseline is None  # 16分待ちの接続しかないため、到達できる経路はゼロ件になる
+
+
+def test_transfer_wait_exactly_15_minutes_is_accepted():
+    """乗換の待ち時間がちょうど15分なら接続できること（上限は15分そのものを含む）"""
+    page = _page(
+        rows_spec=[
+            ("香里園", "発", ["09:00", None]),
+            ("京橋", "発", ["09:10", "09:25"]),  # 待ち時間15分(可)
+            ("渡辺橋", "発", [None, "09:34"]),
+        ],
+        types=["準急", "普通"],
+        dests=["淀屋橋", "中之島"],
+    )
+    trains = build_trains([page])
+    baseline = find_baseline(trains, target="渡辺橋", deadline="09:40", window_start="06:00", window_end="10:00")
+    assert baseline is not None
+    assert baseline[3] == "09:34"
+
+
+def test_feeder_transfer_wait_over_15_minutes_is_excluded():
+    """接続可能な列車の探索でも、待ち時間15分超の乗換駅は候補に数えないこと"""
+    page = _page(
+        rows_spec=[
+            ("香里園", "発", ["08:50", "09:00"]),
+            ("京橋", "発", ["08:55", "09:15"]),  # t_finalの京橋発09:15に対し、待ち20分
+            ("渡辺橋", "発", [None, "09:23"]),
+        ],
+        types=["準急", "普通"],
+        dests=["淀屋橋", "中之島"],
+    )
+    trains = build_trains([page])
+    t_final = trains[1]
+    feeders = find_feeders(trains, t_final, target="渡辺橋")
+    assert feeders == []  # 待ち時間20分は上限15分を超えるため候補に入らない
+
+
+def test_final_train_stops_exclude_section_before_boarding():
+    """到着列車の表示は、乗換前（乗車前）の区間を含まないこと
+    （香里園より前に発車する駅の時刻が、乗換駅より前に表示されてしまう不具合の回帰テスト）"""
+    page = _page(
+        rows_spec=[
+            ("香里園", "発", ["08:57", None]),
+            ("萱島", "発", [None, "08:51"]),   # t_final自身は萱島からすでに走っている
+            ("守口市", "発", [None, "09:01"]),
+            ("京橋", "発", ["09:14", "09:15"]),
+            ("渡辺橋", "発", [None, "09:23"]),
+        ],
+        types=["準急", "普通"],
+        dests=["淀屋橋", "中之島"],
+    )
+    trains = build_trains([page])
+    baseline = find_baseline(trains, target="渡辺橋", deadline="09:30", window_start="06:00", window_end="10:00")
+    assert baseline is not None
+    depart, root_train, t_final, arrive, board_station = baseline
+    assert board_station == "京橋"  # 実際に乗換で乗り込むのは京橋
+    displayed = train_to_dict(t_final, target="渡辺橋", from_station=board_station)
+    # 萱島(08:51)・守口市(09:01)は乗換(京橋)より前の区間なので表示に含まれない
+    assert displayed["stops"] == {"京橋": "09:15", "渡辺橋": "09:23"}

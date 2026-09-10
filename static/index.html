@@ -83,7 +83,13 @@
 .na-tt-vertical td { font-family: 'JetBrains Mono', monospace; }
 .na-tt-vertical td.na-transfer-hit { background: #E8FBF6; color: #06322D; font-weight: 700; border-radius: 4px; }
 
-.na-transfer-summary { font-size: 11.5px; color: var(--teal); background: #E8FBF6; padding: 2px 8px; border-radius: 999px; }
+.na-tt-scroll { overflow-x: auto; margin-top: 10px; }
+.na-tt-feeders { border-collapse: collapse; font-size: 12.5px; white-space: nowrap; width: 100%; }
+.na-tt-feeders th, .na-tt-feeders td { padding: 6px 10px; text-align: center; border-bottom: 1px solid var(--line); }
+.na-tt-feeders th { color: var(--muted); font-weight: 500; background: var(--white); position: sticky; top: 0; }
+.na-tt-feeders td { font-family: 'JetBrains Mono', monospace; background: var(--white); }
+.na-tt-feeders td:first-child, .na-tt-feeders th:first-child { font-family: inherit; }
+.na-tt-feeders td.na-transfer-hit { background: #E8FBF6; color: #06322D; font-weight: 700; }
 
 .na-drawer { display: none; margin-top: 16px; }
 .na-drawer.open { display: block; }
@@ -174,6 +180,7 @@
 (function(){
   const DEFAULT_SETTINGS = { board: "香里園", alight: "渡辺橋", deadline: "09:30" };
   const FULL_STATIONS = ["香里園", "寝屋川市", "萱島", "守口市", "京橋", "渡辺橋", "淀屋橋"];
+  const TRANSFER_STATIONS = ["香里園", "寝屋川市", "萱島", "守口市", "京橋"];
   // 降車駅の選択肢は固定（バックエンドのDESTINATIONSと一致させる）。
   // API応答に依存すると、初回読み込み時にデータ未アップロード/エラーだった場合に
   // プルダウンが永久に空のままになってしまうため、ページ読み込み時に確定させる。
@@ -286,23 +293,23 @@
     </div>`;
 
     html += `<div class="na-section-title"><span class="no">2</span>この列車に乗換可能な列車（${feeders.length}件・香里園以降の全時刻表）</div>`;
-    html += `<div class="na-section-note">普通→普通の乗換は除外しています。乗換時間の制限はありません（同一時刻の乗換も候補に含めています）。香里園発が遅い順に並んでいます。緑色のセルが、到着列車へ乗り換え可能な駅・時刻です。</div>`;
+    html += `<div class="na-section-note">普通→普通の乗換は除外しています。乗換の待ち時間は0〜15分の列車のみを候補にしています。香里園発が遅い順に並んでいます。緑色のセルが、到着列車へ乗り換え可能な駅・時刻です。</div>`;
     if(feeders.length === 0){
       html += `<div class="na-none">乗換可能な列車は見つかりませんでした。</div>`;
     } else {
+      const cols = TRANSFER_STATIONS.filter(st => feeders.some(f => st in f.stops));
+      let rows = '';
       feeders.forEach(f => {
         const hl = new Set(f.transfer_points.map(p => p.station));
-        const summary = f.transfer_points.map(p => `${p.station}(${p.feeder_time}→${p.final_time})`).join(' / ');
-        const feederDiffers = f.type !== finalType;
-        html += `<div class="na-card">
-          <div class="na-row">
-            <div>${settings.board} <span class="na-time-big na-mono">${f.stops[settings.board]}</span> 発 <span class="na-type-tag">${f.type}</span></div>
-            <div>${feederDiffers ? `<span class="na-type-tag">${finalType}</span> ` : ''}${settings.alight} <span class="na-time-big na-mono">${baseline.arrive}</span> 着</div>
-          </div>
-          <div class="na-transfer-summary">乗換可能: ${summary}</div>
-          ${timetableTable(f.stops, hl)}
-        </div>`;
+        rows += `<tr>
+          <td><span class="na-type-tag">${f.type}</span></td>
+          ${cols.map(st => `<td class="na-mono${hl.has(st) ? ' na-transfer-hit' : ''}">${f.stops[st] || ''}</td>`).join('')}
+        </tr>`;
       });
+      html += `<div class="na-tt-scroll"><table class="na-tt-feeders">
+        <thead><tr><th>種別</th>${cols.map(st => `<th>${st}</th>`).join('')}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>`;
     }
 
     detail.innerHTML = html;
