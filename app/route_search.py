@@ -12,7 +12,7 @@
   香里園から）の停車駅・時刻のみを表示する（乗換前・乗車前の区間は表示しない）
 - その到着列車に乗り換え可能な列車（香里園発の全列車が対象）も、香里園以降の
   停車駅・時刻を全て表示する
-  - 普通→普通の乗換は時間短縮にならないため除外する
+  - 普通→普通の乗換は時間短縮にならないため除外する。また目的駅が淀屋橋のとき、京橋での特急への乗換は除外する
   - 乗換に必要な待ち時間は0分以上MAX_TRANSFER_WAIT_MIN分未満の範囲に限定する
     （0分＝同一時刻の乗換も可とするが、待ちすぎる乗換は現実的でないため上限を設ける）
 - 「座れる可能性」の判断はしない（人間が経験則で判断する）。あくまで機械的に
@@ -100,6 +100,19 @@ def _is_viable(train: Train, at_station: str, dest_label: str, target: str) -> b
     return any(STATION_ORDER.get(s, -1) > STATION_ORDER[at_station] for s in train.stops)
 
 
+def _transfer_excluded(station: str, target: str, from_type: str, to_type: str) -> bool:
+    """指定した駅での乗換が除外対象かどうかを判定する。
+
+    - 普通→普通の乗換は時間短縮にならないため除外する
+    - 目的駅が淀屋橋のとき、京橋での特急への乗換は除外する
+    """
+    if from_type == "普通" and to_type == "普通":
+        return True
+    if target == "淀屋橋" and station == "京橋" and to_type == "特急":
+        return True
+    return False
+
+
 def find_baseline(
     trains: list[Train],
     target: str,
@@ -114,7 +127,7 @@ def find_baseline(
     - 乗換は最大 MAX_TRANSFERS 回まで（各乗換駅では、行き止まりの列車を除いた
       最初の1本を接続先とする）
     - 乗換の待ち時間は0分以上MAX_TRANSFER_WAIT_MIN分未満（同一時刻の乗換も可、待ちすぎは除外）
-    - 普通→普通の乗換は除外する
+    - 普通→普通の乗換、および目的駅が淀屋橋のとき京橋での特急への乗換を除外する（_transfer_excluded参照）
 
     戻り値: (香里園発時刻, 乗車列車(Train), 到着列車(Train), 目的駅着時刻, 到着列車への乗車駅)
     の組。乗換が無い経路の場合、乗車列車と到着列車は同一のTrainになり、乗車駅は香里園になる。
@@ -142,7 +155,7 @@ def find_baseline(
             if t - after_time >= MAX_TRANSFER_WAIT_MIN:
                 return None  # 以降はさらに待ち時間が伸びるだけなので打ち切る
             if tr is not exclude and _is_viable(tr, station, dest_label, target):
-                if not (from_type == "普通" and tr.type == "普通"):
+                if not _transfer_excluded(station, target, from_type, tr.type):
                     return t, tr
             idx += 1
         return None
@@ -214,7 +227,7 @@ def find_feeders(trains: list[Train], t_final: Train, target: str) -> list[dict]
     到着列車(t_final)に乗換可能な、香里園発の全列車を探す。
 
     - 乗換の待ち時間は0分以上MAX_TRANSFER_WAIT_MIN分未満（同一時刻の乗換も可、待ちすぎは除外）
-    - 普通→普通の乗換は除外する
+    - 普通→普通の乗換、および目的駅が淀屋橋のとき京橋での特急への乗換を除外する（_transfer_excluded参照）
     - t_final 自身は候補から除く
 
     戻り値: 香里園発時刻の降順（＝最も遅く出発できるものが先頭）にソートした
@@ -229,7 +242,7 @@ def find_feeders(trains: list[Train], t_final: Train, target: str) -> list[dict]
             if st == ORIGIN_STATION:
                 continue  # 香里園は乗車駅であって乗換駅ではないため、比較対象から除く
             if st in tr.stops and st in t_final.stops:
-                if tr.type == "普通" and t_final.type == "普通":
+                if _transfer_excluded(st, target, tr.type, t_final.type):
                     continue
                 wait = t_final.stops[st] - tr.stops[st]
                 if 0 <= wait < MAX_TRANSFER_WAIT_MIN:

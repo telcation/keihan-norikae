@@ -302,3 +302,55 @@ def test_final_train_stops_exclude_section_before_boarding():
     displayed = train_to_dict(t_final, target="渡辺橋", from_station=board_station)
     # 萱島(08:51)・守口市(09:01)は乗換(京橋)より前の区間なので表示に含まれない
     assert displayed["stops"] == {"京橋": "09:15", "渡辺橋": "09:23"}
+
+
+def test_kyobashi_limited_express_transfer_excluded_for_yodoyabashi():
+    """目的駅が淀屋橋のとき、京橋での特急への乗換は基準ルート探索でも除外されること"""
+    page = _page(
+        rows_spec=[
+            ("香里園", "発", ["09:00", None]),
+            ("京橋", "発", ["09:10", "09:12"]),
+            ("淀屋橋", "着", [None, "09:20"]),
+        ],
+        types=["準急", "特急"],
+        dests=["淀屋橋", "淀屋橋"],
+    )
+    trains = build_trains([page])
+    baseline = find_baseline(trains, target="淀屋橋", deadline="09:30", window_start="06:00", window_end="10:00")
+    assert baseline is None  # 唯一の接続が京橋での特急への乗換のため、到達できる経路はゼロ件になる
+
+
+def test_kyobashi_limited_express_transfer_excluded_from_feeders_for_yodoyabashi():
+    """目的駅が淀屋橋のとき、京橋で特急(t_final)へ乗り換える経路はフィーダー探索でも除外されること"""
+    page = _page(
+        rows_spec=[
+            ("香里園", "発", ["08:50", "09:00"]),
+            ("京橋", "発", ["09:05", "09:12"]),
+            ("淀屋橋", "着", [None, "09:20"]),
+        ],
+        types=["準急", "特急"],
+        dests=["淀屋橋", "淀屋橋"],
+    )
+    trains = build_trains([page])
+    t_final = trains[1]  # 09:00発の特急、淀屋橋09:20着
+    feeders = find_feeders(trains, t_final, target="淀屋橋")
+    assert feeders == []
+
+
+def test_kyobashi_limited_express_transfer_still_allowed_for_watanabebashi():
+    """目的駅が渡辺橋のときは、京橋での特急への乗換の除外は適用されないこと
+    （そもそも特急は中之島線に直通しないため、この制限の対象は淀屋橋のケースのみ）"""
+    page = _page(
+        rows_spec=[
+            ("香里園", "発", ["08:50", "09:00"]),
+            ("京橋", "発", ["09:05", "09:12"]),
+            ("渡辺橋", "発", [None, "09:20"]),
+        ],
+        types=["準急", "特急"],
+        dests=["淀屋橋", "中之島"],
+    )
+    trains = build_trains([page])
+    t_final = trains[1]
+    feeders = find_feeders(trains, t_final, target="渡辺橋")
+    assert len(feeders) == 1
+    assert feeders[0]["type"] == "準急"
