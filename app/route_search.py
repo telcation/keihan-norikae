@@ -13,7 +13,7 @@
 - その到着列車に乗り換え可能な列車（香里園発の全列車が対象）も、香里園以降の
   停車駅・時刻を全て表示する
   - 普通→普通の乗換は時間短縮にならないため除外する
-  - 乗換に必要な待ち時間は0〜MAX_TRANSFER_WAIT_MIN分の範囲に限定する
+  - 乗換に必要な待ち時間は0分以上MAX_TRANSFER_WAIT_MIN分未満の範囲に限定する
     （0分＝同一時刻の乗換も可とするが、待ちすぎる乗換は現実的でないため上限を設ける）
 - 「座れる可能性」の判断はしない（人間が経験則で判断する）。あくまで機械的に
   接続可能な全列車を洗い出すことが目的
@@ -44,7 +44,7 @@ SUBTYPE_OF = {"淀屋橋": "着"}
 DESTINATIONS: dict[str, str] = {"渡辺橋": "中之島", "淀屋橋": "淀屋橋"}
 
 MAX_TRANSFERS = 2
-MAX_TRANSFER_WAIT_MIN = 15  # 乗換の待ち時間の上限（分）。0分（同一時刻）は許容する。
+MAX_TRANSFER_WAIT_MIN = 15  # 乗換の待ち時間の上限（分未満）。0分（同一時刻）は許容する。
 
 
 def _tmin(t: str | None) -> int | None:
@@ -113,7 +113,7 @@ def find_baseline(
 
     - 乗換は最大 MAX_TRANSFERS 回まで（各乗換駅では、行き止まりの列車を除いた
       最初の1本を接続先とする）
-    - 乗換の待ち時間は0〜MAX_TRANSFER_WAIT_MIN分（同一時刻の乗換も可、待ちすぎは除外）
+    - 乗換の待ち時間は0分以上MAX_TRANSFER_WAIT_MIN分未満（同一時刻の乗換も可、待ちすぎは除外）
     - 普通→普通の乗換は除外する
 
     戻り値: (香里園発時刻, 乗車列車(Train), 到着列車(Train), 目的駅着時刻, 到着列車への乗車駅)
@@ -139,7 +139,7 @@ def find_baseline(
         idx = bisect.bisect_left(times, after_time)  # 同一時刻の乗換も可
         while idx < len(lst):
             t, tr = lst[idx]
-            if t - after_time > MAX_TRANSFER_WAIT_MIN:
+            if t - after_time >= MAX_TRANSFER_WAIT_MIN:
                 return None  # 以降はさらに待ち時間が伸びるだけなので打ち切る
             if tr is not exclude and _is_viable(tr, station, dest_label, target):
                 if not (from_type == "普通" and tr.type == "普通"):
@@ -213,7 +213,7 @@ def find_feeders(trains: list[Train], t_final: Train, target: str) -> list[dict]
     """
     到着列車(t_final)に乗換可能な、香里園発の全列車を探す。
 
-    - 乗換の待ち時間は0〜MAX_TRANSFER_WAIT_MIN分（同一時刻の乗換も可、待ちすぎは除外）
+    - 乗換の待ち時間は0分以上MAX_TRANSFER_WAIT_MIN分未満（同一時刻の乗換も可、待ちすぎは除外）
     - 普通→普通の乗換は除外する
     - t_final 自身は候補から除く
 
@@ -232,8 +232,13 @@ def find_feeders(trains: list[Train], t_final: Train, target: str) -> list[dict]
                 if tr.type == "普通" and t_final.type == "普通":
                     continue
                 wait = t_final.stops[st] - tr.stops[st]
-                if 0 <= wait <= MAX_TRANSFER_WAIT_MIN:
-                    points.append({"station": st, "feeder_time": _fmt(tr.stops[st]), "final_time": _fmt(t_final.stops[st])})
+                if 0 <= wait < MAX_TRANSFER_WAIT_MIN:
+                    points.append({
+                        "station": st,
+                        "feeder_time": _fmt(tr.stops[st]),
+                        "final_time": _fmt(t_final.stops[st]),
+                        "wait_min": wait,
+                    })
         if points:
             feeders.append({
                 "type": tr.type,

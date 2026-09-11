@@ -152,7 +152,9 @@ def test_find_feeders_no_minimum_buffer_and_excludes_local_to_local():
     assert "普通" not in types  # 普通(t_finalと同種別)→普通の乗換は除外される
     assert "準急" in types      # 京橋09:10着(同一時刻ではないが余裕あり)は候補に入る
     feeder = next(f for f in feeders if f["type"] == "準急")
-    assert feeder["transfer_points"] == [{"station": "京橋", "feeder_time": "09:10", "final_time": "09:15"}]
+    assert feeder["transfer_points"] == [
+        {"station": "京橋", "feeder_time": "09:10", "final_time": "09:15", "wait_min": 5}
+    ]
 
 
 def test_board_train_type_is_kept_when_transfer_happens():
@@ -211,12 +213,12 @@ def test_transfer_wait_over_15_minutes_is_rejected_in_baseline():
     assert baseline is None  # 16分待ちの接続しかないため、到達できる経路はゼロ件になる
 
 
-def test_transfer_wait_exactly_15_minutes_is_accepted():
-    """乗換の待ち時間がちょうど15分なら接続できること（上限は15分そのものを含む）"""
+def test_transfer_wait_exactly_15_minutes_is_rejected():
+    """乗換の待ち時間がちょうど15分は「15分未満」の範囲外なので接続できないこと"""
     page = _page(
         rows_spec=[
             ("香里園", "発", ["09:00", None]),
-            ("京橋", "発", ["09:10", "09:25"]),  # 待ち時間15分(可)
+            ("京橋", "発", ["09:10", "09:25"]),  # 待ち時間15分(不可、15分未満のみ許容)
             ("渡辺橋", "発", [None, "09:34"]),
         ],
         types=["準急", "普通"],
@@ -224,8 +226,24 @@ def test_transfer_wait_exactly_15_minutes_is_accepted():
     )
     trains = build_trains([page])
     baseline = find_baseline(trains, target="渡辺橋", deadline="09:40", window_start="06:00", window_end="10:00")
+    assert baseline is None
+
+
+def test_transfer_wait_14_minutes_is_accepted():
+    """乗換の待ち時間が14分（15分未満）なら接続できること"""
+    page = _page(
+        rows_spec=[
+            ("香里園", "発", ["09:00", None]),
+            ("京橋", "発", ["09:10", "09:24"]),  # 待ち時間14分(可)
+            ("渡辺橋", "発", [None, "09:33"]),
+        ],
+        types=["準急", "普通"],
+        dests=["淀屋橋", "中之島"],
+    )
+    trains = build_trains([page])
+    baseline = find_baseline(trains, target="渡辺橋", deadline="09:40", window_start="06:00", window_end="10:00")
     assert baseline is not None
-    assert baseline[3] == "09:34"
+    assert baseline[3] == "09:33"
 
 
 def test_feeder_transfer_wait_over_15_minutes_is_excluded():
@@ -243,6 +261,23 @@ def test_feeder_transfer_wait_over_15_minutes_is_excluded():
     t_final = trains[1]
     feeders = find_feeders(trains, t_final, target="渡辺橋")
     assert feeders == []  # 待ち時間20分は上限15分を超えるため候補に入らない
+
+
+def test_feeder_transfer_wait_exactly_15_minutes_is_excluded():
+    """接続可能な列車の探索で、待ち時間がちょうど15分の場合も「15分未満」に含まれず除外されること"""
+    page = _page(
+        rows_spec=[
+            ("香里園", "発", ["08:50", "09:00"]),
+            ("京橋", "発", ["09:00", "09:15"]),  # t_finalの京橋発09:15に対し、待ちちょうど15分
+            ("渡辺橋", "発", [None, "09:23"]),
+        ],
+        types=["準急", "普通"],
+        dests=["淀屋橋", "中之島"],
+    )
+    trains = build_trains([page])
+    t_final = trains[1]
+    feeders = find_feeders(trains, t_final, target="渡辺橋")
+    assert feeders == []
 
 
 def test_final_train_stops_exclude_section_before_boarding():
